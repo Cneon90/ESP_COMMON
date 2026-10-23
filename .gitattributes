@@ -1,0 +1,10 @@
+# Нормализация окончаний строк: в репозитории LF, в рабочей копии — как удобно.
+* text=auto
+*.cpp text eol=lf
+*.h   text eol=lf
+*.c   text eol=lf
+*.ini text eol=lf
+*.md  text eol=lf
+*.csv text eol=lf
+*.bin binary
+*.elf binary

@@ -110,6 +110,46 @@ void DiscoveryTask::loop() {
     return;
   }
   handleSearch();
+
+  // Самоанонс: без M-SEARCH со стороны клиента устройство в сети «невидимо»,
+  // поэтому периодически шлём NOTIFY ssdp:alive в multicast-группу — устройство
+  // появляется в списках discovery само, сразу после загрузки и далее каждые
+  // kNotifyPeriodMs. Первый анонс уходит в первый же оборот loop() после join.
+  if (isExpired(m_nextNotifyMs)) {
+    m_nextNotifyMs = nowMs() + kNotifyPeriodMs;
+    sendNotifyAlive();
+  }
+}
+
+void DiscoveryTask::sendNotifyAlive() {
+  char idHex[2 * kDeviceIdLen + 1];
+  deviceIdToHex(m_config.system.deviceId, idHex);
+
+  char body[224];
+  const int len =
+      snprintf(body, sizeof(body),
+               "NOTIFY * HTTP/1.1\r\n"
+               "HOST: 239.255.255.250:1900\r\n"
+               "CACHE-CONTROL: max-age=1800\r\n"
+               "NT: urn:esp-common:device\r\n"
+               "NTS: ssdp:alive\r\n"
+               "SERVER: esp-common/1.0\r\n"
+               "USN: uuid:esp-common-%s\r\n"
+               "\r\n",
+               idHex);
+  if (len <= 0 || static_cast<size_t>(len) >= sizeof(body)) {
+    return;
+  }
+  if (m_udp.beginPacket(IPAddress(239, 255, 255, 250), kSsdpPort) != 1) {
+    m_logger.log(LogLevel::Debug, name(), "notify beginPacket failed");
+    return;
+  }
+  m_udp.write(reinterpret_cast<const uint8_t*>(body), static_cast<size_t>(len));
+  if (m_udp.endPacket() != 1) {
+    m_logger.log(LogLevel::Debug, name(), "notify alive failed");
+    return;
+  }
+  m_logger.log(LogLevel::Info, name(), "NOTIFY ssdp:alive sent (deviceId=%s)", idHex);
 }
 
 void DiscoveryTask::handleSearch() {

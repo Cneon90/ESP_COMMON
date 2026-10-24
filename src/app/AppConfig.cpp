@@ -31,8 +31,10 @@ AppConfig makeDefaultAppConfig() {
   cfg.system.uartTxPin = -1;
   cfg.system.rs485DePin = -1;  // RS485 без DE-пина (полный дуплекс)
 
-  // WiFi-клиент по умолчанию выключен (заполняется при деплое).
-  cfg.wifiClient.enabled = 0;
+  // WiFi-клиент: подключаемся к сети по умолчанию сразу при старте.
+  cfg.wifiClient.enabled = 1;
+  setField(cfg.wifiClient.ssid, sizeof(cfg.wifiClient.ssid), "kalita");
+  setField(cfg.wifiClient.password, sizeof(cfg.wifiClient.password), "87477036302");
   cfg.wifiClient.connectTimeoutMs = 15000;
 
   // AP для первого включения: сервер протокола доступен сразу.

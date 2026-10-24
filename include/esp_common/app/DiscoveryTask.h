@@ -46,16 +46,19 @@ class DiscoveryTask final : public ITask {
   void joinMulticast();      ///< Вступить в группу 239.255.255.250:1900 (неблокирующе).
   void handleSearch();       ///< Разобрать входящий дейтаграмм; ответить на наш M-SEARCH.
   void sendResponse();       ///< Unicast-ответ адресату последнего пакета.
+  void sendNotifyAlive();    ///< Multicast NOTIFY ssdp:alive (самоанонс устройства).
 
   const AppConfig& m_config;
   ILogger& m_logger;
   WiFiUDP m_udp;
   bool m_joined = false;     ///< Группа присоединена (сокет жив).
-  uint32_t m_nextJoinMs = 0; ///< Не раньше следующей попытки join (WiFi мог не подняться).
+  uint32_t m_nextJoinMs = 0;   ///< Не раньше следующей попытки join (WiFi мог не подняться).
+  uint32_t m_nextNotifyMs = 0; ///< Не раньше следующего самоанонса alive.
 
   static constexpr uint16_t kSsdpPort = 1900;
-  static constexpr uint32_t kJoinRetryMs = 5000; ///< Пауза между попытками join.
-  static constexpr size_t kMaxPacket = 512;      ///< M-SEARCH практически всегда меньше.
+  static constexpr uint32_t kJoinRetryMs = 5000;   ///< Пауза между попытками join.
+  static constexpr uint32_t kNotifyPeriodMs = 30000; ///< Период самоанонсов alive.
+  static constexpr size_t kMaxPacket = 512;        ///< M-SEARCH практически всегда меньше.
 };
 
 } // namespace esp_common

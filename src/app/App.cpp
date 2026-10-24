@@ -90,6 +90,9 @@ void App::initWifi() {
 #if defined(ESP_COMMON_HAS_TCP)
   if (m_config.wifiClient.enabled != 0) {
     WiFi.mode(WIFI_STA);
+    // Modem sleep (умолчание ESP32) пропускает multicast-фреймы: M-SEARCH/NOTIFY
+    // SSDP не доходят до ESP, хотя TCP работает. Держим радио всегда активным.
+    WiFi.setSleep(false);
     WiFi.begin(reinterpret_cast<const char*>(m_config.wifiClient.ssid),
                reinterpret_cast<const char*>(m_config.wifiClient.password));
     const uint32_t deadline = nowMs() + m_config.wifiClient.connectTimeoutMs;

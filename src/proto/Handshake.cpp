@@ -260,6 +260,7 @@ void Handshake::fillErrorResponse(HandshakeResponseWire& resp, HandshakeStatus s
   resp.init();
   resp.setStatus(st);
   resp.setMaxFrameSize(static_cast<uint16_t>(kMaxFrameSize));
+  memcpy(resp.deviceId, m_serverCreds.deviceId, kDeviceIdLen);
   resp.setCrc(resp.crcOfPacket());
 }
 
@@ -276,6 +277,19 @@ Result Handshake::processServerRequest(const HandshakeRequestWire& req,
   if (req.getCrc() != req.crcOfPacket()) {
     return Result::err(Status::CrcError);
   }
+
+  // Адресация (RS485-мультиточка): unicast-запрос другому устройству — молча
+  // игнорируем, никакого ответа (Status::NotAddressed не входит в список
+  // статусов, на которые startAsServer отвечает клиенту).
+  if (!deviceIdIsZero(req.targetDeviceId) &&
+      memcmp(req.targetDeviceId, m_serverCreds.deviceId, kDeviceIdLen) != 0) {
+    char targetHex[2 * kDeviceIdLen + 1];
+    deviceIdToHex(req.targetDeviceId, targetHex);
+    m_logger.log(LogLevel::Debug, "Handshake",
+                 "handshake for other device, ignore (target=%s)", targetHex);
+    return Result::err(Status::NotAddressed);
+  }
+
   if (req.protoVer != kProtocolVersion) {
     fillErrorResponse(resp, HsBadVersion);
     return Result::err(Status::ProtocolError);
@@ -344,6 +358,7 @@ Result Handshake::processServerRequest(const HandshakeRequestWire& req,
     return r;
   }
   memcpy(resp.baseIV, baseIv, kBaseIvLen);
+  memcpy(resp.deviceId, m_serverCreds.deviceId, kDeviceIdLen); // кто ответил
   resp.setMaxFrameSize(out.maxFrameSize);
   resp.setDeviceTime(static_cast<uint32_t>(nowMs() / 1000u));
   resp.setCrc(resp.crcOfPacket());
@@ -389,6 +404,9 @@ Result Handshake::createClientRequest(HandshakeRequestWire& req) {
   req.init();
   req.setDeviceType(m_clientCreds.deviceType);
   req.netType = static_cast<uint8_t>(m_clientCreds.netType);
+  // Адресат: по умолчанию нули (broadcast — клиент обычно не знает deviceId
+  // сервера заранее; отвечает любой сервер, услышавший запрос).
+  memcpy(req.targetDeviceId, m_clientCreds.deviceId, kDeviceIdLen);
   // Рекламируем только режимы, реально доступные в этой сборке mbedTLS.
   req.cryptoSupport =
       static_cast<uint8_t>(m_clientCreds.allowedCryptoMask & CryptoFactory::supportedModesMask());

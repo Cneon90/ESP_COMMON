@@ -35,6 +35,10 @@ extern void test_handshake_full_exchange_symmetric(void);
 extern void test_handshake_full_path_via_io(void);
 extern void test_handshake_bad_auth(void);
 extern void test_handshake_bad_crc_rejected(void);
+extern void test_handshake_broadcast_target_answered(void);
+extern void test_handshake_unicast_to_self_answered(void);
+extern void test_handshake_unicast_to_other_ignored_silently(void);
+extern void test_handshake_unicast_to_other_no_response_via_io(void);
 extern void test_handshake_negotiation_picks_strongest_common(void);
 extern void test_handshake_negotiation_plain_only(void);
 extern void test_handshake_no_common_mode(void);
@@ -46,6 +50,13 @@ extern void test_chacha20_roundtrip_and_seq_binding(void);
 extern void test_crypto_rejects_wrong_key_length(void);
 extern void test_mbedtls_aes128_ctr_nist_vector(void);
 extern void test_mbedtls_chacha20_rfc7539_vector(void);
+
+// --- test_deviceid.cpp ---
+extern void test_deviceid_hex_roundtrip(void);
+extern void test_deviceid_from_string_rejects_garbage(void);
+extern void test_deviceid_is_zero_and_compare(void);
+extern void test_deviceid_ensure_generates_nonzero_once(void);
+extern void test_handshake_wire_sizes_with_device_id(void);
 
 // --- test_ping.cpp ---
 extern void test_ping_command_echoes_data(void);
@@ -91,6 +102,10 @@ int main() {
   RUN_TEST(test_handshake_full_path_via_io);
   RUN_TEST(test_handshake_bad_auth);
   RUN_TEST(test_handshake_bad_crc_rejected);
+  RUN_TEST(test_handshake_broadcast_target_answered);
+  RUN_TEST(test_handshake_unicast_to_self_answered);
+  RUN_TEST(test_handshake_unicast_to_other_ignored_silently);
+  RUN_TEST(test_handshake_unicast_to_other_no_response_via_io);
   RUN_TEST(test_handshake_negotiation_picks_strongest_common);
   RUN_TEST(test_handshake_negotiation_plain_only);
   RUN_TEST(test_handshake_no_common_mode);
@@ -122,6 +137,13 @@ int main() {
   RUN_TEST(test_config_set_unknown_section_rejected);
   RUN_TEST(test_reboot_command_schedules_delay);
   RUN_TEST(test_config_commands_via_session_roundtrip);
+
+  // DeviceId (8 байт) + wire-размеры handshake с deviceId
+  RUN_TEST(test_deviceid_hex_roundtrip);
+  RUN_TEST(test_deviceid_from_string_rejects_garbage);
+  RUN_TEST(test_deviceid_is_zero_and_compare);
+  RUN_TEST(test_deviceid_ensure_generates_nonzero_once);
+  RUN_TEST(test_handshake_wire_sizes_with_device_id);
 
   return UNITY_END();
 }

@@ -10,22 +10,22 @@
 ///  - CRC считается по всем байтам пакета, КРОМЕ самого поля crc16;
 ///  - поля "строка" (userName/password) — NUL-паддинг до фиксированной длины.
 ///
-/// =============================== Handshake запрос (76 байт) ===============================
-/// | Смещение | Размер | Поле          | Описание                                      |
-/// |----------|--------|---------------|-----------------------------------------------|
-/// | 0        | 1      | magic         | 0xA5                                          |
-/// | 1        | 1      | protoVer      | kProtocolVersion                              |
-/// | 2        | 2      | deviceType    | BE, идентификатор типа устройства             |
-/// | 4        | 1      | netType       | 0=Serial, 1=TCP (информационно)               |
-/// | 5        | 1      | cryptoSupport | битовая маска CryptoMode (бит i = режим i)    |
-/// | 6        | 10     | userName      | NUL-паддинг                                   |
-/// | 16       | 16     | password      | NUL-паддинг                                   |
-/// | 32       | 32     | pubKey        | X25519, 32 байта (LE-кодирование X, mbedtls)  |
-/// | 64       | 4      | curTime       | BE, unix time отправителя                     |
-/// | 68       | 6      | reserved      | 0x00                                          |
-/// | 74       | 2      | crc16         | BE, CRC по байтам 0..73                       |
+/// =============================== Handshake запрос (78 байт) ===============================
+/// | Смещение | Размер | Поле           | Описание                                      |
+/// |----------|--------|----------------|-----------------------------------------------|
+/// | 0        | 1      | magic          | 0xA5                                          |
+/// | 1        | 1      | protoVer       | kProtocolVersion                              |
+/// | 2        | 2      | deviceType     | BE, идентификатор типа устройства             |
+/// | 4        | 1      | netType        | 0=Serial, 1=TCP (информационно)               |
+/// | 5        | 1      | cryptoSupport  | битовая маска CryptoMode (бит i = режим i)    |
+/// | 6        | 10     | userName       | NUL-паддинг                                   |
+/// | 16       | 16     | password       | NUL-паддинг                                   |
+/// | 32       | 32     | pubKey         | X25519, 32 байта (LE-кодирование X, mbedtls)  |
+/// | 64       | 4      | curTime        | BE, unix time отправителя                     |
+/// | 68       | 8      | targetDeviceId | deviceId адресата; 0 = broadcast              |
+/// | 76       | 2      | crc16          | BE, CRC по байтам 0..75                       |
 ///
-/// =============================== Handshake ответ (58 байт) ================================
+/// =============================== Handshake ответ (65 байт) ================================
 /// | Смещение | Размер | Поле         | Описание                                       |
 /// |----------|--------|--------------|------------------------------------------------|
 /// | 0        | 1      | magic        | 0x5A                                           |
@@ -38,8 +38,8 @@
 /// | 41       | 8      | baseIV       | базовый IV сессии (случайный)                  |
 /// | 49       | 2      | maxFrameSize | BE, максимум длины тела фрейма                 |
 /// | 51       | 4      | deviceTime   | BE, unix time сервера                          |
-/// | 55       | 1      | reserved     | 0x00                                           |
-/// | 56       | 2      | crc16        | BE, CRC по байтам 0..55                        |
+/// | 55       | 8      | deviceId     | deviceId ответившего устройства                |
+/// | 63       | 2      | crc16        | BE, CRC по байтам 0..62                        |
 ///
 /// =============================== Заголовок фрейма (13 байт) ===============================
 /// | Смещение | Размер | Поле    | Описание                                            |
@@ -78,6 +78,7 @@ constexpr size_t kUserNameLen = 10;  ///< userName (NUL-паддинг).
 constexpr size_t kPasswordLen = 16;  ///< password (NUL-паддинг).
 constexpr size_t kBaseIvLen = 8;     ///< Базовый IV сессии.
 constexpr size_t kTokenLen = 4;      ///< Токен сессии.
+constexpr size_t kDeviceIdLen = 8;   ///< Идентификатор устройства (handshake, SSDP).
 /// Максимум длины ТЕЛА фрейма: предел кодека и значение по умолчанию для сессии.
 constexpr size_t kMaxFrameSize = 1024;
 /// Размер заголовка фрейма (без тела).
@@ -161,23 +162,76 @@ inline void copyFromFixed(char* out, size_t outCap, const uint8_t* src, size_t c
   out[i] = '\0';
 }
 
+// ---------------------------------------------------------------------------
+// deviceId (kDeviceIdLen байт): нулевое значение = «не задан» / broadcast.
+// ---------------------------------------------------------------------------
+
+/// Все байты deviceId нулевые.
+inline bool deviceIdIsZero(const uint8_t id[kDeviceIdLen]) {
+  uint8_t acc = 0;
+  for (size_t i = 0; i < kDeviceIdLen; ++i) {
+    acc = static_cast<uint8_t>(acc | id[i]);
+  }
+  return acc == 0;
+}
+
+/// deviceId → hex-строка из 16 символов (нижний регистр) + NUL.
+inline void deviceIdToHex(const uint8_t id[kDeviceIdLen], char out[2 * kDeviceIdLen + 1]) {
+  static const char kHex[] = "0123456789abcdef";
+  for (size_t i = 0; i < kDeviceIdLen; ++i) {
+    out[2 * i] = kHex[id[i] >> 4];
+    out[2 * i + 1] = kHex[id[i] & 0x0F];
+  }
+  out[2 * kDeviceIdLen] = '\0';
+}
+
+/// Шестнадцатеричная цифра → значение 0..15, иначе -1.
+inline int deviceIdHexNibble(char c) {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
+/// Hex-строка (ровно 16 hex-символов + NUL, регистр не важен) → deviceId.
+inline bool deviceIdFromHex(const char* s, uint8_t out[kDeviceIdLen]) {
+  if (s == nullptr) {
+    return false;
+  }
+  for (size_t i = 0; i < kDeviceIdLen; ++i) {
+    const int hi = deviceIdHexNibble(s[2 * i]);
+    const int lo = deviceIdHexNibble(s[2 * i + 1]);
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out[i] = static_cast<uint8_t>((hi << 4) | lo);
+  }
+  return s[2 * kDeviceIdLen] == '\0';
+}
+
 #pragma pack(push, 1)
 
 /// ---------------------------------------------------------------------------
-/// @brief Handshake запрос (клиент → сервер), ровно 76 байт.
+/// @brief Handshake запрос (клиент → сервер), ровно 78 байт.
 /// ---------------------------------------------------------------------------
 struct HandshakeRequestWire {
-  uint8_t magic;               ///< 0xA5
-  uint8_t protoVer;            ///< kProtocolVersion
-  uint8_t deviceType[2];       ///< BE, тип устройства
-  uint8_t netType;             ///< NetType
-  uint8_t cryptoSupport;       ///< битовая маска CryptoMode
+  uint8_t magic;                     ///< 0xA5
+  uint8_t protoVer;                  ///< kProtocolVersion
+  uint8_t deviceType[2];             ///< BE, тип устройства
+  uint8_t netType;                   ///< NetType
+  uint8_t cryptoSupport;             ///< битовая маска CryptoMode
   uint8_t userName[kUserNameLen];
   uint8_t password[kPasswordLen];
-  uint8_t pubKey[kPubKeyLen];  ///< X25519 (LE-кодирование X, как в mbedTLS)
-  uint8_t curTime[4];          ///< BE, unix time отправителя
-  uint8_t reserved[6];         ///< 0x00
-  uint8_t crc16[2];            ///< BE, CRC по байтам 0..73
+  uint8_t pubKey[kPubKeyLen];        ///< X25519 (LE-кодирование X, как в mbedTLS)
+  uint8_t curTime[4];                ///< BE, unix time отправителя
+  uint8_t targetDeviceId[kDeviceIdLen]; ///< deviceId адресата; 0 = broadcast
+  uint8_t crc16[2];                  ///< BE, CRC по байтам 0..75
 
   uint16_t getDeviceType() const { return loadBE16(deviceType); }
   void setDeviceType(uint16_t v) { storeBE16(deviceType, v); }
@@ -209,10 +263,10 @@ struct HandshakeRequestWire {
     protoVer = kProtocolVersion;
   }
 };
-static_assert(sizeof(HandshakeRequestWire) == 76, "HandshakeRequestWire must be exactly 76 bytes");
+static_assert(sizeof(HandshakeRequestWire) == 78, "HandshakeRequestWire must be exactly 78 bytes");
 
 /// ---------------------------------------------------------------------------
-/// @brief Handshake ответ (сервер → клиент), ровно 58 байт.
+/// @brief Handshake ответ (сервер → клиент), ровно 65 байт.
 /// ---------------------------------------------------------------------------
 struct HandshakeResponseWire {
   uint8_t magic;               ///< 0x5A
@@ -225,8 +279,8 @@ struct HandshakeResponseWire {
   uint8_t baseIV[kBaseIvLen];  ///< базовый IV сессии
   uint8_t maxFrameSize[2];     ///< BE
   uint8_t deviceTime[4];       ///< BE, unix time сервера
-  uint8_t reserved;            ///< 0x00
-  uint8_t crc16[2];            ///< BE, CRC по байтам 0..55
+  uint8_t deviceId[kDeviceIdLen]; ///< deviceId ответившего устройства
+  uint8_t crc16[2];            ///< BE, CRC по байтам 0..62
 
   HandshakeStatus getStatus() const { return static_cast<HandshakeStatus>(status); }
   void setStatus(HandshakeStatus s) { status = static_cast<uint8_t>(s); }
@@ -255,7 +309,7 @@ struct HandshakeResponseWire {
     protoVer = kProtocolVersion;
   }
 };
-static_assert(sizeof(HandshakeResponseWire) == 58, "HandshakeResponseWire must be exactly 58 bytes");
+static_assert(sizeof(HandshakeResponseWire) == 65, "HandshakeResponseWire must be exactly 65 bytes");
 
 /// ---------------------------------------------------------------------------
 /// @brief Заголовок фрейма, ровно 13 байт. Тело следует сразу за заголовком.

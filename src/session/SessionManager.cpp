@@ -38,7 +38,9 @@ Result SessionManager::handshakeAsServer(ITransport& io, HandshakeResult& out) {
   TransportHandshakeIo hsIo(io);
   const Result r = m_handshake.startAsServer(hsIo, out);
   if (!r.isOk()) {
-    m_logger.log(LogLevel::Warn, "SessionMgr", "server handshake failed: %s (rc=%d)",
+    // Чужой unicast-запрос на мультиточке — штатная ситуация, не пугаем логом.
+    const LogLevel level = (r.status == Status::NotAddressed) ? LogLevel::Debug : LogLevel::Warn;
+    m_logger.log(level, "SessionMgr", "server handshake failed: %s (rc=%d)",
                  statusName(r.status), r.code);
   }
   return r;

@@ -33,6 +33,8 @@ enum class Status : uint8_t {
   Timeout,            ///< Истёк таймаут сетевой операции.
   Disconnected,       ///< Соединение закрыто/потеряно.
   IoError,            ///< Ошибка ввода-вывода.
+  NotAddressed,       ///< Пакет адресован другому устройству (handshake на
+                      ///< мультиточке) — обработка прервана без ответа.
 };
 
 /// Результат операции: статус + необязательный доп. код (например, rc mbedTLS).
@@ -65,6 +67,7 @@ inline const char* statusName(Status s) {
     case Status::Timeout:        return "Timeout";
     case Status::Disconnected:   return "Disconnected";
     case Status::IoError:        return "IoError";
+    case Status::NotAddressed:   return "NotAddressed";
   }
   return "Unknown";
 }

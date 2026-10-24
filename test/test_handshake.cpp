@@ -196,6 +196,90 @@ void test_handshake_bad_crc_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// Адресация handshake: targetDeviceId (0 = broadcast)
+// ---------------------------------------------------------------------------
+
+/// Сервер с ненулевым собственным deviceId.
+HandshakeCredentials serverCredsWithId() {
+  HandshakeCredentials c = serverCreds();
+  memcpy(c.deviceId, "\x11\x22\x33\x44\x55\x66\x77\x88", kDeviceIdLen);
+  return c;
+}
+
+void test_handshake_broadcast_target_answered() {
+  // Клиент по умолчанию шлёт broadcast (targetDeviceId = 0).
+  Handshake server(serverCredsWithId(), s_logger);
+  Handshake client(serverCreds(), s_logger);
+  client.setClientCredentials(clientCreds());
+
+  HandshakeRequestWire req;
+  TEST_ASSERT_TRUE(client.createClientRequest(req).isOk());
+  TEST_ASSERT_TRUE(deviceIdIsZero(req.targetDeviceId));
+
+  HandshakeResponseWire resp;
+  HandshakeResult sOut;
+  TEST_ASSERT_TRUE(server.processServerRequest(req, resp, sOut).isOk());
+  // В ответе — deviceId ответившего.
+  const uint8_t expected[kDeviceIdLen] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+  TEST_ASSERT_EQUAL_MEMORY(expected, resp.deviceId, kDeviceIdLen);
+}
+
+void test_handshake_unicast_to_self_answered() {
+  const HandshakeCredentials creds = serverCredsWithId();
+  Handshake server(creds, s_logger);
+
+  // Клиент таргетируется на этот сервер: targetDeviceId = его deviceId.
+  HandshakeCredentials clientTarget = clientCreds();
+  memcpy(clientTarget.deviceId, creds.deviceId, kDeviceIdLen);
+  Handshake client(clientTarget, s_logger);
+  client.setClientCredentials(clientTarget);
+
+  HandshakeRequestWire req;
+  TEST_ASSERT_TRUE(client.createClientRequest(req).isOk());
+  TEST_ASSERT_EQUAL_MEMORY(creds.deviceId, req.targetDeviceId, kDeviceIdLen);
+
+  HandshakeResponseWire resp;
+  HandshakeResult sOut;
+  TEST_ASSERT_TRUE(server.processServerRequest(req, resp, sOut).isOk());
+  TEST_ASSERT_EQUAL_MEMORY(creds.deviceId, resp.deviceId, kDeviceIdLen);
+}
+
+void test_handshake_unicast_to_other_ignored_silently() {
+  const HandshakeCredentials creds = serverCredsWithId();
+  Handshake server(creds, s_logger);
+
+  HandshakeRequestWire req;
+  req.init();
+  req.cryptoSupport = kCryptoSupportAll;
+  req.setUser("admin");
+  req.setPassword("secret");
+  memcpy(req.targetDeviceId, "\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA", kDeviceIdLen); // чужой адрес
+  req.setCrc(req.crcOfPacket());
+
+  HandshakeResponseWire resp;
+  memset(&resp, 0, sizeof(resp));
+  HandshakeResult sOut;
+  TEST_ASSERT_EQUAL_INT(Status::NotAddressed,
+                        static_cast<int>(server.processServerRequest(req, resp, sOut).status));
+  // Ответ не формировался вовсе (молчаливое игнорирование, без HsBadVersion и т.п.).
+  TEST_ASSERT_EQUAL_UINT8(0, resp.magic);
+}
+
+void test_handshake_unicast_to_other_no_response_via_io() {
+  Handshake server(serverCredsWithId(), s_logger);
+  // Клиент ищет другое устройство (не этот сервер).
+  HandshakeCredentials otherTarget = clientCreds();
+  memcpy(otherTarget.deviceId, "\xAA\xAA\xAA\xAA\xAA\xAA\xAA\xAA", kDeviceIdLen);
+  Handshake client(otherTarget, s_logger);
+
+  ScriptedServerIo io(server);
+  HandshakeResult cOut;
+  const Result r = client.startAsClient(io, otherTarget, cOut);
+  // Сервер молчит — клиент не получает ответа.
+  TEST_ASSERT_EQUAL_INT(Status::NotAddressed, static_cast<int>(r.status));
+}
+
+// ---------------------------------------------------------------------------
 // Согласование режима шифрования
 // ---------------------------------------------------------------------------
 

@@ -2,7 +2,8 @@
 
 Каркас прошивки ESP32 (Arduino-ESP32 + PlatformIO, C++17, только mbedTLS):
 бинарный протокол (handshake + фреймы + крипто), сменный транспорт и
-обработка команд. Реализована команда `PING` (cmd=0x0000, эхо данных);
+обработка команд. Реализованы команда `PING` (cmd=0x0000, эхо данных),
+Device ID (8 байт) с адресацией handshake и SSDP-обнаружение (M-SEARCH);
 все прочие cmd получают ответ `NOT_IMPLEMENTED`.
 
 Ключевое свойство: **один набор команд работает и когда узел — сервер, и когда
@@ -53,10 +54,10 @@ include/esp_common/
   transport/ ITransport.h SerialTransport.h TcpServerTransport.h TcpClientTransport.h
   commands/  ICommand.h CommandDispatcher.h CommandRegistry.h PingCommand.h NotImplementedCommand.h
   session/   ISession.h Session.h SessionManager.h
-  app/       IApp.h App.h AppConfig.h
+  app/       IApp.h App.h AppConfig.h DeviceId.h DiscoveryTask.h
   util/      crc16.h
 src/         (.cpp зеркально include/)
-test/        test_frame.cpp test_handshake.cpp test_ping.cpp
+test/        test_frame.cpp test_handshake.cpp test_ping.cpp test_deviceid.cpp
 main.cpp  platformio.ini  README.md
 ```
 
@@ -67,23 +68,23 @@ main.cpp  platformio.ini  README.md
 (poly 0x1021, init 0xFFFF, без рефлексии, без финального XOR;
 `"123456789" → 0x29B1`).
 
-### Handshake запрос — 76 байт (клиент → сервер)
+### Handshake запрос — 78 байт (клиент → сервер)
 
-| Смещение | Размер | Поле          | Описание                                   |
-|---------:|-------:|---------------|--------------------------------------------|
-| 0        | 1      | magic         | `0xA5`                                     |
-| 1        | 1      | protoVer      | `0x01`                                     |
-| 2        | 2      | deviceType    | BE                                         |
-| 4        | 1      | netType       | 0=Serial, 1=TCP                            |
-| 5        | 1      | cryptoSupport | битовая маска `CryptoMode`                 |
-| 6        | 10     | userName      | NUL-паддинг                                |
-| 16       | 16     | password      | NUL-паддинг                                |
-| 32       | 32     | pubKey        | X25519 (LE-кодирование X, как в mbedTLS)   |
-| 64       | 4      | curTime       | BE, unix time                              |
-| 68       | 6      | reserved      | `0x00`                                     |
-| 74       | 2      | crc16         | CRC по байтам 0..73                        |
+| Смещение | Размер | Поле           | Описание                                   |
+|---------:|-------:|----------------|--------------------------------------------|
+| 0        | 1      | magic          | `0xA5`                                     |
+| 1        | 1      | protoVer       | `0x01`                                     |
+| 2        | 2      | deviceType     | BE                                         |
+| 4        | 1      | netType        | 0=Serial, 1=TCP                            |
+| 5        | 1      | cryptoSupport  | битовая маска `CryptoMode`                 |
+| 6        | 10     | userName       | NUL-паддинг                                |
+| 16       | 16     | password       | NUL-паддинг                                |
+| 32       | 32     | pubKey         | X25519 (LE-кодирование X, как в mbedTLS)   |
+| 64       | 4      | curTime        | BE, unix time                              |
+| 68       | 8      | targetDeviceId | deviceId адресата; `0` = broadcast         |
+| 76       | 2      | crc16          | CRC по байтам 0..75                        |
 
-### Handshake ответ — 58 байт (сервер → клиент)
+### Handshake ответ — 65 байт (сервер → клиент)
 
 | Смещение | Размер | Поле         | Описание                                |
 |---------:|-------:|--------------|-----------------------------------------|
@@ -97,8 +98,8 @@ main.cpp  platformio.ini  README.md
 | 41       | 8      | baseIV       | базовый IV сессии                       |
 | 49       | 2      | maxFrameSize | BE                                      |
 | 51       | 4      | deviceTime   | BE, unix time сервера                   |
-| 55       | 1      | reserved     | `0x00`                                  |
-| 56       | 2      | crc16        | CRC по байтам 0..55                     |
+| 55       | 8      | deviceId     | deviceId ответившего устройства         |
+| 63       | 2      | crc16        | CRC по байтам 0..62                     |
 
 ### Фрейм — заголовок 13 байт + тело (0..1024)
 
@@ -117,6 +118,51 @@ main.cpp  platformio.ini  README.md
 Ответ на команду: `flags.response=1`, `seq` совпадает с запросом.
 Ответ с ошибкой: дополнительно `flags.error=1`, тело = `[0]` = код `Status`,
 дальше — данные команды (у NOT_IMPLEMENTED — BE-код запрошенной cmd).
+
+## Device ID (8 байт)
+
+У каждого узла есть идентификатор `AppConfig.SystemConfig.deviceId` (8 байт,
+hex-представление — 16 символов). Хелпер — `app/DeviceId.h` (`DeviceId`:
+`toString()`/`fromString()`/`operator==`/`isZero()` + `deviceIdToHex` и др.
+в `proto/ProtocolDefs.h`). Нулевое значение — «не задан».
+
+- **Генерация** при первом старте, если deviceId нулевой (`ensureDeviceId()`):
+  старшие 6 байт — заводской MAC (`esp_efuse_mac_get_default`), младшие 2 —
+  случайные (`esp_random`). MAC в старших байтах — идентификатор стабилен
+  между перепрошивками и совпадает с началом MAC-адреса.
+- **Handshake**: запрос содержит `targetDeviceId` (68..75), ответ — `deviceId`
+  (55..62). Сервер с ненулевым deviceId отвечает только на broadcast и на
+  запросы со своим адресом; unicast для другого узла на RS485-мультиточке
+  игнорируется **молча** (без ответа, лог DEBUG
+  `handshake for other device, ignore`), внутренний статус `NotAddressed`.
+  Клиент по умолчанию шлёт broadcast; подключаясь по адресу, deviceId сервера
+  указывать не обязательно.
+- PING/GET_CONFIG/SET_CONFIG не изменены: адресация сессии — после handshake.
+- **Persistence** (TODO): сгенерированное значение живёт до перезагрузки, пока
+  секция System не сохранена через SET_CONFIG; отдельный NVS-ключ — следующий этап.
+
+## SSDP-обнаружение (упрощённое)
+
+`DiscoveryTask` (`app/DiscoveryTask.h`, кооперативная ITask, включается в
+`App::loop()` как неблокирующий poll, без delay) публикует узел при активном
+WiFi (netType TCP/NetDual): слушает multicast **239.255.255.250:1900**
+(`WiFiUDP::beginMulticast`) и отвечает unicast на `M-SEARCH` с
+`ST: urn:esp-common:device` или `ssdp:all`:
+
+```
+HTTP/1.1 200 OK
+CACHE-CONTROL: max-age=1800
+EXT:
+SERVER: esp-common/1.0
+ST: urn:esp-common:device
+USN: uuid:esp-common-<16 hex-символов deviceId>
+```
+
+deviceId контроллер берёт из USN (суффикс после `uuid:esp-common-`).
+Осознанные упрощения: нет desc.xml/LOCATION и NOTIFY (alive/byebye); ответ
+сразу, без случайной задержки 0..MX; TTL multicast не выставляется
+(`WiFiUDP` arduino-esp32 2.x не отдаёт fd сокета — на unicast-ответы TTL
+не влияет). Если WiFi пропал — задача пересоздаёт сокет при восстановлении.
 
 ### Крипто
 
@@ -250,18 +296,24 @@ pio test -e native
 
 Тесты покрывают: FrameCodec (roundtrip/CRC/фрагментация), CRC16 (вектор
 `0x29B1`), HKDF (RFC 5869), AES-CTR (NIST SP 800-38A), ChaCha20 (RFC 7539),
-симметрию ECDH X25519, согласование режимов шифрования, PING и
-SET/GET_CONFIG/REBOOT через диспетчер, сквозной круг Session (включая replay).
-Итог: **47 тестов — PASS**; прошивка `esp32dev` собирается (Flash ~60%).
+симметрию ECDH X25519, согласование режимов шифрования, адресацию handshake
+(targetDeviceId: broadcast/свой/чужой), PING и
+SET/GET_CONFIG/REBOOT через диспетчер, сквозной круг Session (включая replay),
+хелпер DeviceId (hex-круг, генерация).
+Итог: **56 тестов — PASS**; прошивки `esp32dev` и `esp32dev_serial` собираются
+(Flash ~61%).
 
 ## Статус и следующий этап
 
 Реализовано: протокол, кодек, handshake с ключом сессии, три режима шифрования,
 Serial (RS485)/TCP-транспорты, одновременная работа каналов (NetDual),
 диспетчер команд, PING, чтение/запись настроек (SET/GET_CONFIG + NVS),
-отложенный REBOOT, Session/SessionManager, App с ролью из конфига, Unity-тесты.
+отложенный REBOOT, Session/SessionManager, App с ролью из конфига,
+Device ID (генерация + адресация handshake), SSDP-обнаружение (M-SEARCH),
+Unity-тесты.
 
 `// TODO: следующий этап`:
+- persistence deviceId в NVS (отдельный ключ, не зависящий от секции System);
 - CRC блока настроек и миграция версий layout'а AppConfig;
 - валидация содержимого секций (диапазоны netRole/netType, пины, скорость);
 - шифрование MQTT/HTTP/TCP-Console — каркасные конфиги уже объявлены;

@@ -56,6 +56,7 @@ class App final : public IApp {
   SessionManager m_sessions;
   std::unique_ptr<IConfigStorage> m_configStorage;
 
+  std::unique_ptr<ITask> m_discovery;            // SSDP-обнаружение (только при WiFi)
   std::unique_ptr<ITransport> m_transport;       // TCP: слушатель (Server)
   std::unique_ptr<ITransport> m_serialTransport; // UART/RS485 (всегда Server)
   uint32_t m_restartAtMs = 0;                    // 0 = перезагрузка не запланирована

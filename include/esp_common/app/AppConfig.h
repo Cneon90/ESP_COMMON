@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "esp_common/app/IConfigStorage.h"
 #include "esp_common/proto/IHandshake.h"
@@ -67,8 +68,10 @@ struct TcpConsoleConfig {
 };
 static_assert(sizeof(TcpConsoleConfig) == 3, "TcpConsoleConfig must be 3 bytes");
 
-/// Системные параметры: 16 + 64 + 2 + 4 + 2 + 1 + 1 + 1 + 1 + 1 + 1 = 94 байта.
+/// Системные параметры: 8 + 16 + 64 + 2 + 4 + 2 + 1 + 1 + 1 + 1 + 1 + 1 = 102 байта.
 struct SystemConfig {
+  uint8_t deviceId[kDeviceIdLen] = {0}; ///< Идентификатор устройства; все нули =
+                                        ///< «не задан» (генерируется при первом старте).
   uint8_t deviceName[16] = {0};  ///< Имя устройства (NUL-паддинг).
   uint8_t serverHost[64] = {0};  ///< Адрес сервера для роли Client (host[:ip]).
   uint16_t deviceType = 0x0001;  ///< Тип устройства (дублируется в handshake).
@@ -81,7 +84,7 @@ struct SystemConfig {
   int8_t uartTxPin = -1;         ///< GPIO TX UART (-1 = пины по умолчанию).
   int8_t rs485DePin = -1;        ///< GPIO DE/RE RS485 (-1 = не используется).
 };
-static_assert(sizeof(SystemConfig) == 94, "SystemConfig must be 94 bytes");
+static_assert(sizeof(SystemConfig) == 102, "SystemConfig must be 102 bytes");
 
 /// Крипто-политика и учётные данные handshake: 1 + 1 + 32 + 10 + 16 = 60 байт.
 struct CryptoPolicyConfig {
@@ -93,7 +96,7 @@ struct CryptoPolicyConfig {
 };
 static_assert(sizeof(CryptoPolicyConfig) == 60, "CryptoPolicyConfig must be 60 bytes");
 
-/// Корневой блок настроек: 94 + 102 + 100 + 3 + 195 + 3 + 60 = 557 байт.
+/// Корневой блок настроек: 102 + 102 + 100 + 3 + 195 + 3 + 60 = 565 байт.
 struct AppConfig {
   SystemConfig system;
   WifiClientConfig wifiClient;
@@ -103,7 +106,7 @@ struct AppConfig {
   TcpConsoleConfig tcpConsole;
   CryptoPolicyConfig cryptoPolicy;
 };
-static_assert(sizeof(AppConfig) == 557, "AppConfig must be 557 bytes");
+static_assert(sizeof(AppConfig) == 565, "AppConfig must be 565 bytes");
 
 #pragma pack(pop)
 
@@ -171,9 +174,11 @@ AppConfig makeDefaultAppConfig();
 /// @note Секции с несовпадающим размером (смена layout) молча пропускаются.
 void loadAppConfig(IConfigStorage& storage, AppConfig& cfg);
 
-/// Собрать учётные данные handshake из политики крипто + типа устройства.
+/// Собрать учётные данные handshake из политики крипто, типа устройства и deviceId.
+/// @p deviceId может быть nullptr (останутся нули — сервер отвечает на любой запрос).
 inline HandshakeCredentials makeHandshakeCredentials(const CryptoPolicyConfig& policy,
-                                                     uint16_t deviceType) {
+                                                     uint16_t deviceType,
+                                                     const uint8_t deviceId[kDeviceIdLen]) {
   HandshakeCredentials creds;
   char buf[17];
   copyFromFixed(buf, sizeof(buf), policy.userName, sizeof(policy.userName));
@@ -182,6 +187,9 @@ inline HandshakeCredentials makeHandshakeCredentials(const CryptoPolicyConfig& p
   creds.password = buf;
   creds.allowedCryptoMask = policy.allowedMask;
   creds.deviceType = deviceType;
+  if (deviceId != nullptr) {
+    memcpy(creds.deviceId, deviceId, kDeviceIdLen);
+  }
   creds.netType = NetTcp;
   return creds;
 }

@@ -8,11 +8,13 @@
 #if !defined(ESP_COMMON_NO_TCP)
 #define ESP_COMMON_HAS_TCP 1
 #include <WiFi.h>
+#include "esp_common/app/DiscoveryTask.h"
 #include "esp_common/transport/TcpClientTransport.h"
 #include "esp_common/transport/TcpServerTransport.h"
 #endif
 
 #include "esp_common/app/PreferencesConfigStorage.h"
+#include "esp_common/app/DeviceId.h"
 #include "esp_common/commands/GetConfigCommand.h"
 #include "esp_common/commands/PingCommand.h"
 #include "esp_common/commands/RebootCommand.h"
@@ -25,7 +27,9 @@ App::App(AppConfig& config, ILogger& logger)
     : m_config(config),
       m_logger(logger),
       m_dispatcher(logger),
-      m_handshake(makeHandshakeCredentials(config.cryptoPolicy, config.system.deviceType), logger),
+      m_handshake(makeHandshakeCredentials(config.cryptoPolicy, config.system.deviceType,
+                                           config.system.deviceId),
+                  logger),
       m_sessions(m_codec, m_handshake, m_dispatcher, logger) {
   // NVS-хранилище на устройстве; RAM-заглушка для нативной сборки.
   m_configStorage.reset(new PreferencesConfigStorage());
@@ -34,10 +38,14 @@ App::App(AppConfig& config, ILogger& logger)
 bool App::init() {
   // 1) Настройки: дефолты + сохранённые в NVS секции (их могли править по UART).
   loadAppConfig(*m_configStorage, m_config);
+  ensureDeviceId(m_config.system.deviceId); // генерация при первом старте (нули)
   m_handshake.setServerCredentials(handshakeCredentials());
 
-  m_logger.log(LogLevel::Info, "App", "init: device=%s netType=%u netRole=%u tcpPort=%u baud=%lu",
-               reinterpret_cast<const char*>(m_config.system.deviceName),
+  char deviceIdHex[2 * kDeviceIdLen + 1];
+  deviceIdToHex(m_config.system.deviceId, deviceIdHex);
+  m_logger.log(LogLevel::Info, "App",
+               "init: device=%s id=%s netType=%u netRole=%u tcpPort=%u baud=%lu",
+               reinterpret_cast<const char*>(m_config.system.deviceName), deviceIdHex,
                static_cast<unsigned>(m_config.system.netType),
                static_cast<unsigned>(m_config.system.netRole),
                static_cast<unsigned>(m_config.system.tcpPort),
@@ -64,6 +72,16 @@ bool App::init() {
       m_logger.log(LogLevel::Error, "App", "serial open failed");
     }
   }
+
+  // 4) SSDP-обнаружение — только там, где есть WiFi (попытка join повторяется
+  //    в loop(), если STA ещё не подключился).
+#if defined(ESP_COMMON_HAS_TCP)
+  if (netType == static_cast<uint8_t>(NetTcp) || netType == static_cast<uint8_t>(NetDual)) {
+    m_discovery.reset(new DiscoveryTask(m_config, m_logger));
+    m_discovery->setup();
+  }
+#endif
+
   m_initialized = true;
   return true;
 }
@@ -124,13 +142,18 @@ void App::loop() {
     ensureSerialSession(); // неблокирующе: handshake только когда пир заговорил
   }
 
+  if (m_discovery) {
+    m_discovery->loop(); // SSDP: неблокирующий poll multicast-сокета
+  }
+
   m_sessions.tick(kPollTimeoutMs);
   checkReboot();
 }
 
 HandshakeCredentials App::handshakeCredentials() const {
-  HandshakeCredentials creds =
-      makeHandshakeCredentials(m_config.cryptoPolicy, m_config.system.deviceType);
+  HandshakeCredentials creds = makeHandshakeCredentials(m_config.cryptoPolicy,
+                                                        m_config.system.deviceType,
+                                                        m_config.system.deviceId);
   creds.netType = static_cast<NetType>(m_config.system.netType);
   return creds;
 }
@@ -185,7 +208,11 @@ void App::ensureClientConnection() {
     m_nextRetryMs = nowMs() + kReconnectDelayMs;
     return;
   }
-  const Result r = m_sessions.establishAsClient(std::move(transport), handshakeCredentials());
+  // Клиент подключается по адресу (serverHost), а не по deviceId: в запросе
+  // targetDeviceId = 0 (broadcast) — отвечает любой сервер, услышавший запрос.
+  HandshakeCredentials creds = handshakeCredentials();
+  memset(creds.deviceId, 0, sizeof(creds.deviceId));
+  const Result r = m_sessions.establishAsClient(std::move(transport), creds);
   if (!r.isOk()) {
     m_logger.log(LogLevel::Warn, "App", "client handshake failed: %s, retry in %u ms",
                  statusName(r.status), static_cast<unsigned>(kReconnectDelayMs));
@@ -233,7 +260,9 @@ App::App(AppConfig& config, ILogger& logger)
     : m_config(config),
       m_logger(logger),
       m_dispatcher(logger),
-      m_handshake(makeHandshakeCredentials(config.cryptoPolicy, config.system.deviceType), logger),
+      m_handshake(makeHandshakeCredentials(config.cryptoPolicy, config.system.deviceType,
+                                           config.system.deviceId),
+                  logger),
       m_sessions(m_codec, m_handshake, m_dispatcher, logger) {
   m_configStorage.reset(new RamConfigStorage());
 }

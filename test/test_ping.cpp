@@ -408,7 +408,7 @@ void test_config_commands_via_session_roundtrip() {
       std::unique_ptr<ICommand>(new SetConfigCommand(cfg, storage, s_logger)));
   ts.serverDispatcher.registerCommand(std::unique_ptr<ICommand>(new GetConfigCommand(cfg)));
 
-  // SET: меняем deviceType (первые 2 байта SystemConfig, хост-порядок).
+  // SET: меняем deviceType (SystemConfig целиком, хост-порядок).
   SystemConfig patched;
   memcpy(&patched, &cfg.system, sizeof(patched));
   patched.deviceType = 0x0B0B;

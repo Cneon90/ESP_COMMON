@@ -40,6 +40,10 @@ struct HandshakeCredentials {
   uint8_t allowedCryptoMask = kCryptoSupportAll;
   uint16_t deviceType = 0;      ///< Тип устройства (информационно).
   NetType netType = NetTcp;     ///< Тип сети (информационно).
+  /// Идентификатор устройства. Роль сервера: НАШ deviceId — по нему
+  /// отфильтровываются чужие запросы на мультиточке (нули = отвечать на любой).
+  /// Роль клиента: deviceId сервера-адресата (нули = broadcast).
+  uint8_t deviceId[kDeviceIdLen] = {0};
 };
 
 /// @brief Минимальный поток байтов, нужный handshake (I/O без знания транспорта).
